@@ -1,27 +1,19 @@
 # Copyright (c) 2023, Albert Gu, Tri Dao.
 import sys
-import warnings
 import os
 import re
 import ast
 from pathlib import Path
-from packaging.version import parse, Version
 import platform
-import shutil
 
 from setuptools import setup, find_packages
-import subprocess
 
-import urllib.request
-import urllib.error
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 import torch
 from torch.utils.cpp_extension import (
     BuildExtension,
-    CppExtension,
     CUDAExtension,
-    CUDA_HOME,
 )
 
 
@@ -59,67 +51,14 @@ def get_platform():
         raise ValueError("Unsupported platform: {}".format(sys.platform))
 
 
-def get_cuda_bare_metal_version(cuda_dir):
-    raw_output = subprocess.check_output(
-        [cuda_dir + "/bin/nvcc", "-V"], universal_newlines=True
-    )
-    output = raw_output.split()
-    release_idx = output.index("release") + 1
-    bare_metal_version = parse(output[release_idx].split(",")[0])
-
-    return raw_output, bare_metal_version
-
-
-def check_if_cuda_home_none(global_option: str) -> None:
-    if CUDA_HOME is not None:
-        return
-    # warn instead of error because user could be downloading prebuilt wheels, so nvcc won't be necessary
-    # in that case.
-    warnings.warn(
-        f"{global_option} was requested, but nvcc was not found.  Are you sure your environment has nvcc available?  "
-        "If you're installing within a container from https://hub.docker.com/r/pytorch/pytorch, "
-        "only images whose names contain 'devel' will provide nvcc."
-    )
-
-
-def append_nvcc_threads(nvcc_extra_args):
-    return nvcc_extra_args + ["--threads", "4"]
-
-
 cmdclass = {}
 ext_modules = []
 
 if not SKIP_CUDA_BUILD:
     print("\n\ntorch.__version__  = {}\n\n".format(torch.__version__))
+    print("Please note that rocm >= 6.0 is required for it to build correctly and run efficiently.")
     TORCH_MAJOR = int(torch.__version__.split(".")[0])
     TORCH_MINOR = int(torch.__version__.split(".")[1])
-
-    check_if_cuda_home_none(PACKAGE_NAME)
-    # Check, if CUDA11 is installed for compute capability 8.0
-    cc_flag = []
-    if CUDA_HOME is not None:
-        _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
-        if bare_metal_version < Version("11.6"):
-            raise RuntimeError(
-                f"{PACKAGE_NAME} is only supported on CUDA 11.6 and above.  "
-                "Note: make sure nvcc has a supported version by running nvcc -V."
-            )
-            
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_53,code=sm_53")
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_62,code=sm_62")
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_70,code=sm_70")
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_72,code=sm_72")
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_80,code=sm_80")
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_87,code=sm_87")
-    if bare_metal_version >= Version("11.8"):
-        cc_flag.append("-gencode")
-        cc_flag.append("arch=compute_90,code=sm_90")
 
     # HACK: The compiler flag -D_GLIBCXX_USE_CXX11_ABI is set to be the same as
     # torch._C._GLIBCXX_USE_CXX11_ABI
@@ -144,26 +83,22 @@ if not SKIP_CUDA_BUILD:
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
-                "nvcc": append_nvcc_threads(
+                "nvcc":
                     [
                         "-O3",
                         "-std=c++17",
-                        "-U__CUDA_NO_HALF_OPERATORS__",
-                        "-U__CUDA_NO_HALF_CONVERSIONS__",
-                        "-U__CUDA_NO_BFLOAT16_OPERATORS__",
-                        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-                        "-U__CUDA_NO_BFLOAT162_OPERATORS__",
-                        "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
-                        "--expt-relaxed-constexpr",
-                        "--expt-extended-lambda",
-                        "--use_fast_math",
-                        "--ptxas-options=-v",
-                        "-lineinfo",
-                    ]
-                    + cc_flag
-                ),
+                        "-U__HIP_NO_HALF_OPERATORS__",
+                        "-U__HIP_NO_HALF_CONVERSIONS__",
+                        "-U__HIP_NO_BFLOAT16_OPERATORS__",
+                        "-U__HIP_NO_BFLOAT16_CONVERSIONS__",
+                        "-U__HIP_NO_BFLOAT162_OPERATORS__",
+                        "-U__HIP_NO_BFLOAT162_CONVERSIONS__",
+                        "-ffast-math",
+                        "-munsafe-fp-atomics"
+                    ],
             },
             include_dirs=[Path(this_dir) / "csrc" / "selective_scan"],
+            extra_link_args=["-z", "muldefs"]
         )
     )
 
@@ -179,64 +114,13 @@ def get_package_version():
         return str(public_version)
 
 
-def get_wheel_url():
-    # Determine the version numbers that will be used to determine the correct wheel
-    # We're using the CUDA version used to build torch, not the one currently installed
-    # _, cuda_version_raw = get_cuda_bare_metal_version(CUDA_HOME)
-    torch_cuda_version = parse(torch.version.cuda)
-    torch_version_raw = parse(torch.__version__)
-    # For CUDA 11, we only compile for CUDA 11.8, and for CUDA 12 we only compile for CUDA 12.2
-    # to save CI time. Minor versions should be compatible.
-    torch_cuda_version = parse("11.8") if torch_cuda_version.major == 11 else parse("12.2")
-    python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    platform_name = get_platform()
-    mamba_ssm_version = get_package_version()
-    # cuda_version = f"{cuda_version_raw.major}{cuda_version_raw.minor}"
-    cuda_version = f"{torch_cuda_version.major}{torch_cuda_version.minor}"
-    torch_version = f"{torch_version_raw.major}.{torch_version_raw.minor}"
-    cxx11_abi = str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()
-
-    # Determine wheel URL based on CUDA version, torch version, python version and OS
-    wheel_filename = f"{PACKAGE_NAME}-{mamba_ssm_version}+cu{cuda_version}torch{torch_version}cxx11abi{cxx11_abi}-{python_version}-{python_version}-{platform_name}.whl"
-    wheel_url = BASE_WHEEL_URL.format(
-        tag_name=f"v{mamba_ssm_version}", wheel_name=wheel_filename
-    )
-    return wheel_url, wheel_filename
-
-
 class CachedWheelsCommand(_bdist_wheel):
     """
-    The CachedWheelsCommand plugs into the default bdist wheel, which is ran by pip when it cannot
-    find an existing wheel (which is currently the case for all installs). We use
-    the environment parameters to detect whether there is already a pre-built version of a compatible
-    wheel available and short-circuits the standard full build pipeline.
+    Fragment from the CUDA version. There aren't any prebuilt wheels, 
+    so this just calls run.
     """
-
     def run(self):
-        if FORCE_BUILD:
-            return super().run()
-
-        wheel_url, wheel_filename = get_wheel_url()
-        print("Guessing wheel URL: ", wheel_url)
-        try:
-            urllib.request.urlretrieve(wheel_url, wheel_filename)
-
-            # Make the archive
-            # Lifted from the root wheel processing command
-            # https://github.com/pypa/wheel/blob/cf71108ff9f6ffc36978069acb28824b44ae028e/src/wheel/bdist_wheel.py#LL381C9-L381C85
-            if not os.path.exists(self.dist_dir):
-                os.makedirs(self.dist_dir)
-
-            impl_tag, abi_tag, plat_tag = self.get_tag()
-            archive_basename = f"{self.wheel_dist_name}-{impl_tag}-{abi_tag}-{plat_tag}"
-
-            wheel_path = os.path.join(self.dist_dir, archive_basename + ".whl")
-            print("Raw wheel path", wheel_path)
-            shutil.move(wheel_filename, wheel_path)
-        except urllib.error.HTTPError:
-            print("Precompiled wheel not found. Building from source...")
-            # If the wheel could not be downloaded, build from source
-            super().run()
+        super().run()
 
 
 setup(

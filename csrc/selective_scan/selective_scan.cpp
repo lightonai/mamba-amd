@@ -2,8 +2,10 @@
  * Copyright (c) 2023, Tri Dao.
  ******************************************************************************/
 
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
+
+#include <hip/hip_runtime.h>
+#include <ATen/hip/HIPContext.h>
+#include <c10/hip/HIPGuard.h>
 #include <torch/extension.h>
 #include <vector>
 
@@ -51,10 +53,10 @@
     }
 
 template<typename input_t, typename weight_t>
-void selective_scan_fwd_cuda(SSMParamsBase &params, cudaStream_t stream);
+void selective_scan_fwd_cuda(SSMParamsBase &params, hipStream_t stream);
 
 template <typename input_t, typename weight_t>
-void selective_scan_bwd_cuda(SSMParamsBwd &params, cudaStream_t stream);
+void selective_scan_bwd_cuda(SSMParamsBwd &params, hipStream_t stream);
 
 void set_ssm_params_fwd(SSMParamsBase &params,
                         // sizes
@@ -249,8 +251,8 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
     TORCH_CHECK(B.is_cuda());
     TORCH_CHECK(C.is_cuda());
 
-    TORCH_CHECK(u.stride(-1) == 1 || u.size(-1) == 1);
-    TORCH_CHECK(delta.stride(-1) == 1 || delta.size(-1) == 1);
+    TORCH_CHECK(u.stride(-1) == 1);
+    TORCH_CHECK(delta.stride(-1) == 1);
 
     const auto sizes = u.sizes();
     const int batch_size = sizes[0];
@@ -268,20 +270,20 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
         CHECK_SHAPE(B, dim, dstate);
     } else {
         CHECK_SHAPE(B, batch_size, n_groups, dstate, !is_complex ? seqlen : seqlen * 2);
-        TORCH_CHECK(B.stride(-1) == 1 || B.size(-1) == 1);
+        TORCH_CHECK(B.stride(-1) == 1);
     }
     if (!is_variable_C) {
         CHECK_SHAPE(C, dim, dstate);
     } else {
         CHECK_SHAPE(C, batch_size, n_groups, dstate, !is_complex ? seqlen: seqlen * 2);
-        TORCH_CHECK(C.stride(-1) == 1 || C.size(-1) == 1);
+        TORCH_CHECK(C.stride(-1) == 1);
     }
 
     if (D_.has_value()) {
         auto D = D_.value();
         TORCH_CHECK(D.scalar_type() == at::ScalarType::Float);
         TORCH_CHECK(D.is_cuda());
-        TORCH_CHECK(D.stride(-1) == 1 || D.size(-1) == 1);
+        TORCH_CHECK(D.stride(-1) == 1);
         CHECK_SHAPE(D, dim);
     }
 
@@ -289,7 +291,7 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
         auto delta_bias = delta_bias_.value();
         TORCH_CHECK(delta_bias.scalar_type() == at::ScalarType::Float);
         TORCH_CHECK(delta_bias.is_cuda());
-        TORCH_CHECK(delta_bias.stride(-1) == 1 || delta_bias.size(-1) == 1);
+        TORCH_CHECK(delta_bias.stride(-1) == 1);
         CHECK_SHAPE(delta_bias, dim);
     }
 
@@ -299,7 +301,7 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
         z = z_.value();
         TORCH_CHECK(z.scalar_type() == input_type);
         TORCH_CHECK(z.is_cuda());
-        TORCH_CHECK(z.stride(-1) == 1 || z.size(-1) == 1);
+        TORCH_CHECK(z.stride(-1) == 1);
         CHECK_SHAPE(z, batch_size, dim, seqlen);
         out_z = torch::empty_like(z);
     }
@@ -323,8 +325,8 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{(char)u.get_device()};
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    at::hip::HIPGuard device_guard{(char)u.get_device()};
+    auto stream = at::hip::getCurrentHIPStream().stream();
     DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(u.scalar_type(), "selective_scan_fwd", [&] {
         DISPATCH_WTYPE_FLOAT_AND_COMPLEX(A.scalar_type(), "selective_scan_fwd", [&] {
             selective_scan_fwd_cuda<input_t, weight_t>(params, stream);
@@ -368,9 +370,9 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
     TORCH_CHECK(C.is_cuda());
     TORCH_CHECK(dout.is_cuda());
 
-    TORCH_CHECK(u.stride(-1) == 1 || u.size(-1) == 1);
-    TORCH_CHECK(delta.stride(-1) == 1 || delta.size(-1) == 1);
-    TORCH_CHECK(dout.stride(-1) == 1 || dout.size(-1) == 1);
+    TORCH_CHECK(u.stride(-1) == 1);
+    TORCH_CHECK(delta.stride(-1) == 1);
+    TORCH_CHECK(dout.stride(-1) == 1);
 
     const auto sizes = u.sizes();
     const int batch_size = sizes[0];
@@ -388,13 +390,13 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
         CHECK_SHAPE(B, dim, dstate);
     } else {
         CHECK_SHAPE(B, batch_size, n_groups, dstate, !is_complex ? seqlen : seqlen * 2);
-        TORCH_CHECK(B.stride(-1) == 1 || B.size(-1) == 1);
+        TORCH_CHECK(B.stride(-1) == 1);
     }
     if (!is_variable_C) {
         CHECK_SHAPE(C, dim, dstate);
     } else {
         CHECK_SHAPE(C, batch_size, n_groups, dstate, !is_complex ? seqlen: seqlen * 2);
-        TORCH_CHECK(C.stride(-1) == 1 || C.size(-1) == 1);
+        TORCH_CHECK(C.stride(-1) == 1);
     }
     CHECK_SHAPE(dout, batch_size, dim, seqlen);
 
@@ -402,7 +404,7 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
         auto D = D_.value();
         TORCH_CHECK(D.scalar_type() == at::ScalarType::Float);
         TORCH_CHECK(D.is_cuda());
-        TORCH_CHECK(D.stride(-1) == 1 || D.size(-1) == 1);
+        TORCH_CHECK(D.stride(-1) == 1);
         CHECK_SHAPE(D, dim);
     }
 
@@ -410,7 +412,7 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
         auto delta_bias = delta_bias_.value();
         TORCH_CHECK(delta_bias.scalar_type() == at::ScalarType::Float);
         TORCH_CHECK(delta_bias.is_cuda());
-        TORCH_CHECK(delta_bias.stride(-1) == 1 || delta_bias.size(-1) == 1);
+        TORCH_CHECK(delta_bias.stride(-1) == 1);
         CHECK_SHAPE(delta_bias, dim);
     }
 
@@ -420,21 +422,21 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
         z = z_.value();
         TORCH_CHECK(z.scalar_type() == input_type);
         TORCH_CHECK(z.is_cuda());
-        TORCH_CHECK(z.stride(-1) == 1 || z.size(-1) == 1);
+        TORCH_CHECK(z.stride(-1) == 1);
         CHECK_SHAPE(z, batch_size, dim, seqlen);
 
         TORCH_CHECK(out_.has_value());
         out = out_.value();
         TORCH_CHECK(out.scalar_type() == input_type);
         TORCH_CHECK(out.is_cuda());
-        TORCH_CHECK(out.stride(-1) == 1 || out.size(-1) == 1);
+        TORCH_CHECK(out.stride(-1) == 1);
         CHECK_SHAPE(out, batch_size, dim, seqlen);
 
         if (dz_.has_value()) {
             dz = dz_.value();
             TORCH_CHECK(dz.scalar_type() == input_type);
             TORCH_CHECK(dz.is_cuda());
-            TORCH_CHECK(dz.stride(-1) == 1 || dz.size(-1) == 1);
+            TORCH_CHECK(dz.stride(-1) == 1);
             CHECK_SHAPE(dz, batch_size, dim, seqlen);
         } else {
             dz = torch::empty_like(z);
@@ -478,8 +480,8 @@ selective_scan_bwd(const at::Tensor &u, const at::Tensor &delta,
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{(char)u.get_device()};
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    at::hip::HIPGuard device_guard{(char)u.get_device()};
+    auto stream = at::hip::getCurrentHIPStream().stream();
     DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(u.scalar_type(), "selective_scan_bwd", [&] {
         DISPATCH_WTYPE_FLOAT_AND_COMPLEX(A.scalar_type(), "selective_scan_bwd", [&] {
             selective_scan_bwd_cuda<input_t, weight_t>(params, stream);

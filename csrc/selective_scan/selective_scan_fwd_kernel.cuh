@@ -3,14 +3,14 @@
  ******************************************************************************/
 
 #pragma once
+#include <hip/hip_runtime.h>
+
 
 #include <c10/util/BFloat16.h>
 #include <c10/util/Half.h>
-#include <c10/cuda/CUDAException.h>  // For C10_CUDA_CHECK and C10_CUDA_KERNEL_LAUNCH_CHECK
+#include <c10/hip/HIPException.h>  // For C10_HIP_CHECK and C10_HIP_KERNEL_LAUNCH_CHECK
 
-#include <cub/block/block_load.cuh>
-#include <cub/block/block_store.cuh>
-#include <cub/block/block_scan.cuh>
+#include <hipcub/hipcub.hpp>
 
 #include "selective_scan.h"
 #include "selective_scan_common.h"
@@ -20,17 +20,18 @@ template<int kNThreads_, int kNItems_, int kNRows_, bool kIsEvenLen_,
          bool kIsVariableB_, bool kIsVariableC_,
          bool kHasZ_, typename input_t_, typename weight_t_>
 struct Selective_Scan_fwd_kernel_traits {
-    static_assert(kNItems_ % 4 == 0);
+    static_assert(kNItems_ % 2 == 0);
     using input_t = input_t_;
     using weight_t = weight_t_;
     static constexpr int kNThreads = kNThreads_;
     // Setting MinBlocksPerMP to be 3 (instead of 2) for 128 threads improves occupancy.
-    static constexpr int kMinBlocks = kNThreads < 128 ? 5 : 3;
+    // check the bwd kernel for an explanation of the scaling here
+    static constexpr int kMinBlocks = kNThreads < 128 ? (5 * kNThreads) / 32 : (3 * kNThreads) / 32;
     static constexpr int kNItems = kNItems_;
     static constexpr int kNRows = kNRows_;
     static constexpr int kNBytes = sizeof(input_t);
     static_assert(kNBytes == 2 || kNBytes == 4);
-    static constexpr int kNElts = kNBytes == 4 ? 4 : std::min(8, kNItems);
+    static constexpr int kNElts = kNBytes == 4 ? std_::min(4, kNItems) : std_::min(8, kNItems);
     static_assert(kNItems % kNElts == 0);
     static constexpr int kNLoads = kNItems / kNElts;
     static constexpr bool kIsComplex = std::is_same_v<weight_t, complex_t>;
@@ -43,24 +44,24 @@ struct Selective_Scan_fwd_kernel_traits {
 
     using vec_t = typename BytesToType<kNBytes * kNElts>::Type;
     using scan_t = std::conditional_t<!kIsComplex, float2, float4>;
-    using BlockLoadT = cub::BlockLoad<input_t, kNThreads, kNItems, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
-    using BlockLoadVecT = cub::BlockLoad<vec_t, kNThreads, kNLoads,
-        !kDirectIO ? cub::BLOCK_LOAD_WARP_TRANSPOSE : cub::BLOCK_LOAD_DIRECT>;
-    using BlockLoadWeightT = cub::BlockLoad<input_t, kNThreads, !kIsComplex ? kNItems : kNItems * 2, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
-    using BlockLoadWeightVecT = cub::BlockLoad<vec_t, kNThreads, !kIsComplex ? kNLoads : kNLoads * 2,
-        !kDirectIO ? cub::BLOCK_LOAD_WARP_TRANSPOSE  : cub::BLOCK_LOAD_DIRECT>;
-    using BlockStoreT = cub::BlockStore<input_t, kNThreads, kNItems, cub::BLOCK_STORE_WARP_TRANSPOSE>;
-    using BlockStoreVecT = cub::BlockStore<vec_t, kNThreads, kNLoads,
-        !kDirectIO ? cub::BLOCK_STORE_WARP_TRANSPOSE : cub::BLOCK_STORE_DIRECT>;
-    // using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_RAKING_MEMOIZE>;
-    // using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_RAKING>;
-    using BlockScanT = cub::BlockScan<scan_t, kNThreads, cub::BLOCK_SCAN_WARP_SCANS>;
-    static constexpr int kSmemIOSize = std::max({sizeof(typename BlockLoadT::TempStorage),
-                                                 sizeof(typename BlockLoadVecT::TempStorage),
-                                                 (int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightT::TempStorage),
-                                                 (int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightVecT::TempStorage),
-                                                 sizeof(typename BlockStoreT::TempStorage),
-                                                 sizeof(typename BlockStoreVecT::TempStorage)});
+    using BlockLoadT = hipcub::BlockLoad<input_t, kNThreads, kNItems, hipcub::BLOCK_LOAD_WARP_TRANSPOSE>;
+    using BlockLoadVecT = hipcub::BlockLoad<vec_t, kNThreads, kNLoads,
+        !kDirectIO ? hipcub::BLOCK_LOAD_WARP_TRANSPOSE : hipcub::BLOCK_LOAD_DIRECT>;
+    using BlockLoadWeightT = hipcub::BlockLoad<input_t, kNThreads, !kIsComplex ? kNItems : kNItems * 2, hipcub::BLOCK_LOAD_WARP_TRANSPOSE>;
+    using BlockLoadWeightVecT = hipcub::BlockLoad<vec_t, kNThreads, !kIsComplex ? kNLoads : kNLoads * 2,
+        !kDirectIO ? hipcub::BLOCK_LOAD_WARP_TRANSPOSE  : hipcub::BLOCK_LOAD_DIRECT>;
+    using BlockStoreT = hipcub::BlockStore<input_t, kNThreads, kNItems, hipcub::BLOCK_STORE_WARP_TRANSPOSE>;
+    using BlockStoreVecT = hipcub::BlockStore<vec_t, kNThreads, kNLoads,
+        !kDirectIO ? hipcub::BLOCK_STORE_WARP_TRANSPOSE : hipcub::BLOCK_STORE_DIRECT>;
+    // using BlockScanT = hipcub::BlockScan<scan_t, kNThreads, hipcub::BLOCK_SCAN_RAKING_MEMOIZE>;
+    // using BlockScanT = hipcub::BlockScan<scan_t, kNThreads, hipcub::BLOCK_SCAN_RAKING>;
+    using BlockScanT = hipcub::BlockScan<scan_t, kNThreads, hipcub::BLOCK_SCAN_WARP_SCANS>;
+    static constexpr int kSmemIOSize = std_::max(sizeof(typename BlockLoadT::TempStorage),
+                                       std_::max(sizeof(typename BlockLoadVecT::TempStorage),
+                                       std_::max((int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightT::TempStorage),
+                                       std_::max((int(kIsVariableB) + int(kIsVariableC)) * sizeof(typename BlockLoadWeightVecT::TempStorage),
+                                       std_::max(sizeof(typename BlockStoreT::TempStorage),
+                                       sizeof(typename BlockStoreVecT::TempStorage))))));
     static constexpr int kSmemSize = kSmemIOSize + sizeof(typename BlockScanT::TempStorage);
 };
 
@@ -236,14 +237,14 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 scan_t running_prefix;
                 if constexpr (!kIsComplex) {
                     // If we use WARP_SCAN then all lane 0 of all warps (not just thread 0) needs to read
-                    running_prefix = chunk > 0 && threadIdx.x % 32 == 0 ? smem_running_prefix[state_idx + r * MAX_DSTATE] : make_float2(1.f, 0.f);
+                    running_prefix = chunk > 0 && threadIdx.x % warpSize == 0 ? smem_running_prefix[state_idx + r * MAX_DSTATE] : make_float2(1.f, 0.f);
                     // running_prefix = chunk > 0 && threadIdx.x == 0 ? smem_running_prefix[state_idx] : make_float2(1.f, 0.f);
                 } else {
-                    running_prefix = chunk > 0 && threadIdx.x % 32 == 0 ? smem_running_prefix[state_idx + r * MAX_DSTATE] : make_float4(1.f, 0.f, 0.f, 0.f);
+                    running_prefix = chunk > 0 && threadIdx.x % warpSize == 0 ? smem_running_prefix[state_idx + r * MAX_DSTATE] : make_float4(1.f, 0.f, 0.f, 0.f);
                     // running_prefix = chunk > 0 && threadIdx.x == 0 ? smem_running_prefix[state_idx] : make_float4(1.f, 0.f, 0.f, 0.f);
                 }
                 SSMScanPrefixCallbackOp<weight_t> prefix_op(running_prefix);
-                Ktraits::BlockScanT(smem_scan).InclusiveScan(
+                typename Ktraits::BlockScanT(smem_scan).InclusiveScan(
                     thread_data, thread_data, SSMScanOp<weight_t>(), prefix_op
                 );
                 // There's a syncthreads in the scan op, so we don't need to sync here.
@@ -303,7 +304,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
 }
 
 template<int kNThreads, int kNItems, typename input_t, typename weight_t>
-void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
+void selective_scan_fwd_launch(SSMParamsBase &params, hipStream_t stream) {
     // Only kNRows == 1 is tested for now, which ofc doesn't differ from previously when we had each block
     // processing 1 row.
     constexpr int kNRows = 1;
@@ -318,11 +319,11 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
                     dim3 grid(params.batch, params.dim / kNRows);
                     auto kernel = &selective_scan_fwd_kernel<Ktraits>;
                     if (kSmemSize >= 48 * 1024) {
-                        C10_CUDA_CHECK(cudaFuncSetAttribute(
-                            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                        C10_HIP_CHECK(hipFuncSetAttribute(
+                            (const void *)kernel, hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
                     }
                     kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
-                    C10_CUDA_KERNEL_LAUNCH_CHECK();
+                    C10_HIP_KERNEL_LAUNCH_CHECK();
                 });
             });
         });
@@ -330,13 +331,13 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
 }
 
 template<typename input_t, typename weight_t>
-void selective_scan_fwd_cuda(SSMParamsBase &params, cudaStream_t stream) {
+void selective_scan_fwd_cuda(SSMParamsBase &params, hipStream_t stream) {
     if (params.seqlen <= 128) {
-        selective_scan_fwd_launch<32, 4, input_t, weight_t>(params, stream);
+        selective_scan_fwd_launch<64, 2, input_t, weight_t>(params, stream);
     } else if (params.seqlen <= 256) {
-        selective_scan_fwd_launch<32, 8, input_t, weight_t>(params, stream);
+        selective_scan_fwd_launch<64, 4, input_t, weight_t>(params, stream);
     } else if (params.seqlen <= 512) {
-        selective_scan_fwd_launch<32, 16, input_t, weight_t>(params, stream);
+        selective_scan_fwd_launch<64, 8, input_t, weight_t>(params, stream);
     } else if (params.seqlen <= 1024) {
         selective_scan_fwd_launch<64, 16, input_t, weight_t>(params, stream);
     } else {

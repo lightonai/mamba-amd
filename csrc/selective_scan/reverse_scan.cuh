@@ -3,13 +3,9 @@
  ******************************************************************************/
 
 #pragma once
+#include <hip/hip_runtime.h>
 
-#include <cub/config.cuh>
-
-#include <cub/util_ptx.cuh>
-#include <cub/util_type.cuh>
-#include <cub/block/block_raking_layout.cuh>
-// #include <cub/detail/uninitialized_copy.cuh>
+#include <hipcub/hipcub.hpp>
 #include "uninitialized_copy.cuh"
 
 /**
@@ -34,7 +30,7 @@ template <
     int         LENGTH,
     typename    T,
     typename    ScanOp>
-__device__ __forceinline__ T ThreadReverseScanInclusive(
+__device__ __forceinline__ void ThreadReverseScanInclusive(
     const T (&input)[LENGTH],
     T (&output)[LENGTH],
     ScanOp scan_op,
@@ -89,9 +85,9 @@ struct WarpReverseScan {
     //---------------------------------------------------------------------
 
     /// Whether the logical warp size and the PTX warp size coincide
-    static constexpr bool IS_ARCH_WARP = (LOGICAL_WARP_THREADS == CUB_WARP_THREADS(0));
+    static constexpr bool IS_ARCH_WARP = (LOGICAL_WARP_THREADS == HIPCUB_WARP_THREADS);
     /// The number of warp scan steps
-    static constexpr int STEPS = cub::Log2<LOGICAL_WARP_THREADS>::VALUE;
+    static constexpr int STEPS = hipcub::Log2<LOGICAL_WARP_THREADS>::VALUE;
     static_assert(LOGICAL_WARP_THREADS == 1 << STEPS);
 
 
@@ -115,9 +111,9 @@ struct WarpReverseScan {
     /// Constructor
     explicit __device__ __forceinline__
     WarpReverseScan()
-        : lane_id(cub::LaneId())
+        : lane_id(hipcub::LaneId())
         , warp_id(IS_ARCH_WARP ? 0 : (lane_id / LOGICAL_WARP_THREADS))
-        , member_mask(cub::WarpMask<LOGICAL_WARP_THREADS>(warp_id))
+        , member_mask(hipcub::WarpMask<LOGICAL_WARP_THREADS>(warp_id))
     {
         if (!IS_ARCH_WARP) {
             lane_id = lane_id % LOGICAL_WARP_THREADS;
@@ -130,7 +126,7 @@ struct WarpReverseScan {
         T               input,              ///< [in] The value to broadcast
         int             src_lane)           ///< [in] Which warp lane is to do the broadcasting
     {
-        return cub::ShuffleIndex<LOGICAL_WARP_THREADS>(input, src_lane, member_mask);
+        return hipcub::ShuffleIndex<LOGICAL_WARP_THREADS>(input, src_lane, member_mask);
     }
 
 
@@ -145,7 +141,7 @@ struct WarpReverseScan {
         #pragma unroll
         for (int STEP = 0; STEP < STEPS; STEP++) {
             int offset = 1 << STEP;
-            T temp = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+            T temp = hipcub::ShuffleDown<LOGICAL_WARP_THREADS>(
                 inclusive_output, offset, LOGICAL_WARP_THREADS - 1, member_mask
             );
             // Perform scan op if from a valid peer
@@ -165,9 +161,9 @@ struct WarpReverseScan {
     {
         T inclusive_output;
         InclusiveReverseScan(input, inclusive_output, scan_op);
-        warp_aggregate = cub::ShuffleIndex<LOGICAL_WARP_THREADS>(inclusive_output, 0, member_mask);
+        warp_aggregate = hipcub::ShuffleIndex<LOGICAL_WARP_THREADS>(inclusive_output, 0, member_mask);
         // initial value unknown
-        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+        exclusive_output = hipcub::ShuffleDown<LOGICAL_WARP_THREADS>(
             inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
         );
     }
@@ -184,7 +180,7 @@ struct WarpReverseScan {
     {
         InclusiveReverseScan(input, inclusive_output, scan_op);
         // initial value unknown
-        exclusive_output = cub::ShuffleDown<LOGICAL_WARP_THREADS>(
+        exclusive_output = hipcub::ShuffleDown<LOGICAL_WARP_THREADS>(
             inclusive_output, 1, LOGICAL_WARP_THREADS - 1, member_mask
         );
     }
@@ -209,7 +205,7 @@ struct BlockReverseScan {
     static constexpr int BLOCK_THREADS = BLOCK_DIM_X;
 
     /// Layout type for padded thread block raking grid
-    using BlockRakingLayout = cub::BlockRakingLayout<T, BLOCK_THREADS>;
+    using BlockRakingLayout = hipcub::BlockRakingLayout<T, BLOCK_THREADS>;
     // The number of reduction elements is not a multiple of the number of raking threads for now
     static_assert(BlockRakingLayout::UNGUARDED);
 
@@ -230,7 +226,7 @@ struct BlockReverseScan {
 
 
     /// Alias wrapper allowing storage to be unioned
-    struct TempStorage : cub::Uninitialized<_TempStorage> {};
+    struct TempStorage : hipcub::Uninitialized<_TempStorage> {};
 
 
     //---------------------------------------------------------------------
@@ -291,7 +287,7 @@ struct BlockReverseScan {
         TempStorage &temp_storage)
     :
         temp_storage(temp_storage.Alias()),
-        linear_tid(cub::RowMajorTid(BLOCK_DIM_X, 1, 1))
+        linear_tid(hipcub::RowMajorTid(BLOCK_DIM_X, 1, 1))
     {}
 
 
@@ -318,7 +314,7 @@ struct BlockReverseScan {
             // Place thread partial into shared memory raking grid
             T *placement_ptr = BlockRakingLayout::PlacementPtr(temp_storage.raking_grid, linear_tid);
             detail::uninitialized_copy(placement_ptr, input);
-            cub::CTA_SYNC();
+            hipcub::CTA_SYNC();
             // Reduce parallelism down to just raking threads
             if (linear_tid < RAKING_THREADS) {
                 WarpReverseScan warp_scan;
@@ -336,7 +332,7 @@ struct BlockReverseScan {
                 // Exclusive raking downsweep scan
                 ExclusiveDownsweep(scan_op, downsweep_postfix);
             }
-            cub::CTA_SYNC();
+            hipcub::CTA_SYNC();
             // Grab thread postfix from shared memory
             exclusive_output = *placement_ptr;
 
@@ -368,7 +364,7 @@ struct BlockReverseScan {
             //     }
             // }
 
-            // cub::CTA_SYNC();
+            // hipcub::CTA_SYNC();
 
             // // Incorporate thread block postfix into outputs
             // T block_postfix = temp_storage.block_postfix;

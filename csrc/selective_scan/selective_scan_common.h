@@ -3,14 +3,29 @@
  ******************************************************************************/
 
 #pragma once
+#include <hip/hip_runtime.h>
 
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
+
+#include <hip/hip_bf16.h>
+#include <hip/hip_fp16.h>
 #include <c10/util/complex.h>  // For scalar_value_type
+#include <c10/util/Half.h>
+#include <c10/util/BFloat16.h>
 
 #define MAX_DSTATE 256
 
 using complex_t = c10::complex<float>;
+
+namespace std_{
+    template <typename T>
+    __host__ __device__ constexpr T min(T a, T b) {
+        return a < b ? a : b;
+    }
+    template <typename T>
+    __host__ __device__ constexpr T max(T a, T b) {
+        return a > b ? a : b;
+    }
+}
 
 inline __device__ float2 operator+(const float2 & a, const float2 & b){
     return {a.x + b.x, a.y + b.y};
@@ -153,12 +168,12 @@ inline __device__ void load_input(typename Ktraits::input_t *u,
     if constexpr (Ktraits::kIsEvenLen) {
         auto& smem_load_vec = reinterpret_cast<typename Ktraits::BlockLoadVecT::TempStorage&>(smem_load);
         using vec_t = typename Ktraits::vec_t;
-        Ktraits::BlockLoadVecT(smem_load_vec).Load(
+        typename Ktraits::BlockLoadVecT(smem_load_vec).Load(
             reinterpret_cast<vec_t*>(u),
             reinterpret_cast<vec_t(&)[Ktraits::kNLoads]>(u_vals)
        );
     } else {
-        Ktraits::BlockLoadT(smem_load).Load(u, u_vals, seqlen, 0.f);
+        typename Ktraits::BlockLoadT(smem_load).Load(u, u_vals, seqlen, 0.f);
     }
 }
 
@@ -173,12 +188,12 @@ inline __device__ void load_weight(typename Ktraits::input_t *Bvar,
         if constexpr (Ktraits::kIsEvenLen) {
             auto& smem_load_weight_vec = reinterpret_cast<typename Ktraits::BlockLoadWeightVecT::TempStorage&>(smem_load_weight);
             using vec_t = typename Ktraits::vec_t;
-            Ktraits::BlockLoadWeightVecT(smem_load_weight_vec).Load(
+            typename Ktraits::BlockLoadWeightVecT(smem_load_weight_vec).Load(
                 reinterpret_cast<vec_t*>(Bvar),
                 reinterpret_cast<vec_t(&)[Ktraits::kNLoads]>(B_vals_load)
           );
         } else {
-            Ktraits::BlockLoadWeightT(smem_load_weight).Load(Bvar, B_vals_load, seqlen, 0.f);
+            typename Ktraits::BlockLoadWeightT(smem_load_weight).Load(Bvar, B_vals_load, seqlen, 0.f);
         }
         // #pragma unroll
         // for (int i = 0; i < kNItems; ++i) { B_vals[i] = B_vals_load[i]; }
@@ -188,12 +203,12 @@ inline __device__ void load_weight(typename Ktraits::input_t *Bvar,
         if constexpr (Ktraits::kIsEvenLen) {
             auto& smem_load_weight_vec = reinterpret_cast<typename Ktraits::BlockLoadWeightVecT::TempStorage&>(smem_load_weight);
             using vec_t = typename Ktraits::vec_t;
-            Ktraits::BlockLoadWeightVecT(smem_load_weight_vec).Load(
+            typename Ktraits::BlockLoadWeightVecT(smem_load_weight_vec).Load(
                 reinterpret_cast<vec_t*>(Bvar),
                 reinterpret_cast<vec_t(&)[Ktraits::kNLoads * 2]>(B_vals_load)
           );
         } else {
-            Ktraits::BlockLoadWeightT(smem_load_weight).Load(Bvar, B_vals_load, seqlen, 0.f);
+            typename Ktraits::BlockLoadWeightT(smem_load_weight).Load(Bvar, B_vals_load, seqlen, 0.f);
         }
         #pragma unroll
         for (int i = 0; i < kNItems; ++i) { B_vals[i] = complex_t(B_vals_load[i * 2], B_vals_load[i * 2 + 1]); }
@@ -211,11 +226,11 @@ inline __device__ void store_output(typename Ktraits::input_t *out,
     if constexpr (Ktraits::kIsEvenLen) {
         auto& smem_store_vec = reinterpret_cast<typename Ktraits::BlockStoreVecT::TempStorage&>(smem_store);
         using vec_t = typename Ktraits::vec_t;
-        Ktraits::BlockStoreVecT(smem_store_vec).Store(
+        typename Ktraits::BlockStoreVecT(smem_store_vec).Store(
             reinterpret_cast<vec_t*>(out),
             reinterpret_cast<vec_t(&)[Ktraits::kNLoads]>(write_vals)
        );
     } else {
-        Ktraits::BlockStoreT(smem_store).Store(out, write_vals, seqlen);
+        typename Ktraits::BlockStoreT(smem_store).Store(out, write_vals, seqlen);
     }
 }
