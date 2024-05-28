@@ -11,12 +11,13 @@ Mamba is a new state space model architecture showing promising performance on i
 It is based on the line of progress on [structured state space models](https://github.com/state-spaces/s4),
 with an efficient hardware-aware design and implementation in the spirit of [FlashAttention](https://github.com/Dao-AILab/flash-attention).
 
-This port is set up to run efficiently on AMD. It does not retain support for Nvidia.
+This port is set up to run efficiently on AMD. It does not retain support for Nvidia. There is another Mamba AMD port by [EmbeddedLLM](https://github.com/EmbeddedLLM/mamba-rocm), but it is not optimized.
 
 ## Installation
 
 This port must be built from source with `pip install .` from this repository. 
-You also need to install [Triton](https://github.com/ROCm/triton) for ROCM. You will likely need to build from source. You can also try to run with the Triton version that is installed with PyTorch for ROCM.
+
+You also need to install [Triton](https://github.com/ROCm/triton) for ROCM. You will likely need to build from source to avoid an autotuner error. You can also try to run with the Triton version that is installed with PyTorch for ROCM.
 
 If `pip` complains about PyTorch versions, try passing `--no-build-isolation` to `pip`.
 
