@@ -11,20 +11,21 @@ Mamba is a new state space model architecture showing promising performance on i
 It is based on the line of progress on [structured state space models](https://github.com/state-spaces/s4),
 with an efficient hardware-aware design and implementation in the spirit of [FlashAttention](https://github.com/Dao-AILab/flash-attention).
 
+This port is set up to run efficiently on AMD. It does not retain support for Nvidia.
+
 ## Installation
 
-- [Option] `pip install causal-conv1d>=1.2.0`: an efficient implementation of a simple causal Conv1d layer used inside the Mamba block.
-- `pip install mamba-ssm`: the core Mamba package.
-
-It can also be built from source with `pip install .` from this repository.
+This port must be built from source with `pip install .` from this repository. 
+You also need to install [Triton](https://github.com/ROCm/triton) for ROCM. You will likely need to build from source. You can also try to run with the Triton version that is installed with PyTorch for ROCM.
 
 If `pip` complains about PyTorch versions, try passing `--no-build-isolation` to `pip`.
 
 Other requirements:
 - Linux
-- NVIDIA GPU
-- PyTorch 1.12+
-- CUDA 11.6+
+- AMD GPU
+- PyTorch 2.3.0+ with ROCM
+- ROCM 6.0+
+- Triton for ROCM
 
 ## Usage
 
